@@ -52,6 +52,8 @@ Manual testing has covered incoming and outgoing calls with Voipfone, audio in b
 
 ## Source and licences
 
+Copyright © 2026 Andy Bridson.
+
 The Simple Dialler source is offered under **GNU GPL version 3 or, at your option, any later version**. See [LICENSE](LICENSE). Third-party components keep their own licences; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and the retained licence files in `Licenses/`.
 
 This repository provides source and build instructions. It does not provide a downloadable app binary or release package.
