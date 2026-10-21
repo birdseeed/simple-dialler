@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>Simple Dialler</string>
+<key>CFBundleIdentifier</key><string>com.andybridson.simple-dialler</string>
+<key>CFBundleName</key><string>Simple Dialler</string>
+<key>CFBundleDisplayName</key><string>Simple Dialler</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>1.0</string>
+<key>CFBundleVersion</key><string>3</string>
+<key>CFBundleIconFile</key><string>AppIcon.icns</string>
+<key>LSMinimumSystemVersion</key><string>27.0</string>
+<key>NSMicrophoneUsageDescription</key><string>Simple Dialler uses your microphone for SIP phone calls.</string>
+<key>NSHighResolutionCapable</key><true/>
+<key>NSHumanReadableCopyright</key><string>Local SIP dialler. Includes PJSIP under GPL-2.0-or-later; see bundled licences and source README.</string>
+</dict></plist>

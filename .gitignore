@@ -1,0 +1,21 @@
+# macOS metadata
+.DS_Store
+
+# Local build output and packaged applications
+build/
+*.app/
+*.xcarchive/
+*.dmg
+*.pkg
+
+# Local account/configuration material
+.env
+.env.local
+.env.*.local
+Config.xml
+*.local.xml
+*.credentials.xml
+
+# Local logs and private artifacts
+*.log
+private-artifacts/
