@@ -4,8 +4,8 @@ export COPYFILE_DISABLE=1
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT_DIR"
 
-PJ_PREFIX="$(brew --prefix pjproject)"
-SSL_PREFIX="$(brew --prefix openssl@4)"
+PJ_PREFIX="${SIMPLE_DIALLER_PJ_PREFIX:-$(brew --prefix pjproject)}"
+SSL_PREFIX="${SIMPLE_DIALLER_SSL_PREFIX:-$(brew --prefix openssl@4)}"
 PC_FILE="$PJ_PREFIX/lib/pkgconfig/libpjproject.pc"
 read -r -a CFLAGS <<< "$(sed -n 's/^Cflags: //p' "$PC_FILE")"
 read -r -a LINK_FLAGS <<< "$(sed -n 's/^Libs: //p' "$PC_FILE") $(sed -n 's/^Libs.private: //p' "$PC_FILE")"
@@ -29,12 +29,17 @@ clang -std=c11 -O2 -Wall -Wextra -Werror "${CFLAGS[@]}" -ISources Tests/call-rac
 "$BUILD_DIR/call-race-tests"
 
 APP="$BUILD_DIR/Simple Dialler.app"
+if [[ -e "$APP" ]]; then
+    # Only remove the generated bundle, never the caller-selected build folder.
+    rm -rf "$APP"
+fi
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/Licenses"
 swiftc -swift-version 5 -O -import-objc-header Sources/SIPBridge.h Sources/DialRules.swift Sources/AccountStore.swift Sources/main.swift "$BUILD_DIR/SIPBridge.o" "${LINK_FLAGS[@]}" -lc++ -framework Security -o "$APP/Contents/MacOS/Simple Dialler"
 cp Info.plist "$APP/Contents/Info.plist"
 "$ROOT_DIR/scripts/build-icon.sh"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
-cp Licenses/* "$APP/Contents/Resources/Licenses/"
+cp -R Licenses/. "$APP/Contents/Resources/Licenses/"
+cp LICENSE THIRD_PARTY_NOTICES.md "$APP/Contents/Resources/"
 xattr -cr "$APP"
 codesign --force --sign - --identifier com.andybridson.simple-dialler "$APP"
 codesign --verify --deep --strict "$APP"

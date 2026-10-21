@@ -6,8 +6,8 @@
 <key>CFBundleName</key><string>Simple Dialler</string>
 <key>CFBundleDisplayName</key><string>Simple Dialler</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>1.0</string>
-<key>CFBundleVersion</key><string>3</string>
+<key>CFBundleShortVersionString</key><string>1.0.1</string>
+<key>CFBundleVersion</key><string>4</string>
 <key>CFBundleIconFile</key><string>AppIcon.icns</string>
 <key>LSMinimumSystemVersion</key><string>27.0</string>
 <key>NSMicrophoneUsageDescription</key><string>Simple Dialler uses your microphone for SIP phone calls.</string>

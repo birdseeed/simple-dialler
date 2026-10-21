@@ -350,7 +350,7 @@ final class Dialler: NSObject, NSApplicationDelegate {
         var state = sd_state()
         switch state.registration {
         case 1: registration.stringValue = "Connecting…"
-        case 2: registration.stringValue = "Connected · \(settings.server)"
+        case 2: registration.stringValue = "Connected"
         case 3: registration.stringValue = "Registration failed (\(state.registration_code))"
         default: registration.stringValue = "Not connected · open Settings"
         }

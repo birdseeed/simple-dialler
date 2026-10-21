@@ -24,17 +24,22 @@ Closing the main window leaves Simple Dialler running and registered. Use the me
 
 The app uses UDP for SIP signalling and unencrypted RTP for call audio. It does not provide TLS or SRTP. Use it on a network you trust and check that this connection is suitable for your SIP provider.
 
+## Download
+
+Download the Apple Silicon app ZIP from [GitHub Releases](https://github.com/birdseeed/simple-dialler/releases/latest), unzip it and move **Simple Dialler.app** to Applications. The matching complete source archive and SHA-256 checksums are on the same release.
+
+The app is ad-hoc signed and is not notarised by Apple. macOS may block the first launch; after trying to open it, use **System Settings → Privacy & Security → Open Anyway** if you choose to trust this download.
+
 ## Requirements
 
 - An Apple Silicon Mac running macOS 27 or later.
-- Xcode Command Line Tools, including Swift and the Apple compiler tools. A full Xcode installation is not required.
-- Homebrew, with `pjproject` 2.17 and `openssl@4` 4.0.3 installed.
+- A SIP account and microphone access.
 
-The build links the Homebrew libraries into the app. The app does not need Homebrew installed to run after it has been built.
+The downloaded app includes its dependencies and does not require Homebrew or developer tools. Building from source additionally requires Xcode Command Line Tools. See [the dependency rebuild instructions](docs/RELEASING.md) for the pinned release build, or use the Homebrew development build below.
 
 ## Build from source
 
-Install the Command Line Tools and Homebrew prerequisites above, then run:
+For a development build, install the Command Line Tools and Homebrew, then run:
 
 ```sh
 brew install pjproject openssl@4
@@ -64,4 +69,4 @@ Copyright © 2026 Andy Bridson.
 
 The Simple Dialler source is offered under **GNU GPL version 3 or, at your option, any later version**. See [LICENSE](LICENSE). Third-party components keep their own licences; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and the retained licence files in `Licenses/`.
 
-This repository provides source and build instructions. It does not provide a downloadable app binary or release package.
+Binary releases include the matching complete source archive, build recipes and dependency notices. See [rebuild and release instructions](docs/RELEASING.md). The release build excludes G.722.1 and iLBC; standard G.711 PCMU/PCMA telephone codecs remain enabled.
