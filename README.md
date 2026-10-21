@@ -2,6 +2,14 @@
 
 Simple Dialler is a small native macOS app for making and answering SIP telephone calls. It is designed for people who prefer to enter numbers with a keyboard.
 
+## Screenshots
+
+| Dialler | Account setup |
+| --- | --- |
+| <img src="docs/screenshots/dialler.png" width="280" alt="Simple Dialler connected and ready for keyboard dialling"> | <img src="docs/screenshots/account-setup.png" width="320" alt="SIP account settings using example details"> |
+
+The account setup screenshot uses example details.
+
 ## Features
 
 - Type or paste a telephone number and press **Enter** to call.
