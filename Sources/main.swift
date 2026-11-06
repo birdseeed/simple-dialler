@@ -187,107 +187,163 @@ final class Dialler: NSObject, NSApplicationDelegate {
         NSApp.mainMenu = menu
     }
 
+    // Standard AppKit controls retain keyboard focus, system appearance and accessibility.
+    func symbol(_ name: String, on button: NSButton, help: String) {
+        button.image = NSImage(systemSymbolName: name, accessibilityDescription: nil)
+        button.imagePosition = .imageLeading
+        button.toolTip = help
+        button.bezelStyle = .rounded
+    }
+
+    func verticalStack(_ views: [NSView], spacing: CGFloat = 10) -> NSStackView {
+        let stack = NSStackView(views: views)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = spacing
+        return stack
+    }
+
+    func section(_ title: String, views: [NSView]) -> NSBox {
+        let box = NSBox()
+        box.title = title
+        box.titleFont = .systemFont(ofSize: 12, weight: .semibold)
+        box.contentViewMargins = NSSize(width: 14, height: 12)
+        let content = verticalStack(views)
+        content.translatesAutoresizingMaskIntoConstraints = false
+        box.contentView!.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: box.contentView!.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: box.contentView!.trailingAnchor),
+            content.topAnchor.constraint(equalTo: box.contentView!.topAnchor),
+            content.bottomAnchor.constraint(equalTo: box.contentView!.bottomAnchor)
+        ])
+        for view in views { view.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true }
+        return box
+    }
+
     func buildWindow() {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 390, height: 720),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 620),
                           styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.title = "Simple Dialler"
         window.center()
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .centerX
-        stack.spacing = 13
+        let stack = verticalStack([], spacing: 16)
         stack.translatesAutoresizingMaskIntoConstraints = false
         window.contentView!.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: window.contentView!.topAnchor, constant: 22),
+            stack.topAnchor.constraint(equalTo: window.contentView!.topAnchor, constant: 20),
             stack.bottomAnchor.constraint(lessThanOrEqualTo: window.contentView!.bottomAnchor, constant: -16),
-            stack.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor, constant: 24),
-            stack.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor, constant: -24)
+            stack.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor, constant: -20)
         ])
-        registration.maximumNumberOfLines = 3
-        registration.alignment = .center
-        registration.font = .systemFont(ofSize: 12)
+        registration.maximumNumberOfLines = 2
+        registration.font = .systemFont(ofSize: 12, weight: .medium)
         registration.textColor = .secondaryLabelColor
-        stack.addArrangedSubview(registration)
-        registration.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        number.placeholderString = "Number or +44…"
-        number.font = .monospacedDigitSystemFont(ofSize: 27, weight: .regular)
+        registration.setAccessibilityLabel("Account connection status")
+        settingsButton.title = ""
+        settingsButton.target = self
+        settingsButton.action = #selector(showSettings(_:))
+        symbol("gearshape", on: settingsButton, help: "Settings… (⌘,)")
+        settingsButton.setAccessibilityLabel("Settings")
+        reconnectButton.title = ""
+        reconnectButton.target = self
+        reconnectButton.action = #selector(reconnect(_:))
+        symbol("arrow.clockwise", on: reconnectButton, help: "Reconnect with your saved account")
+        reconnectButton.setAccessibilityLabel("Reconnect")
+        let spacer = NSView()
+        let connection = NSStackView(views: [registration, spacer, reconnectButton, settingsButton])
+        connection.spacing = 6
+        registration.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        stack.addArrangedSubview(connection)
+        connection.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+
+        number.placeholderString = "Enter a phone number"
+        number.font = .monospacedDigitSystemFont(ofSize: 25, weight: .regular)
         number.alignment = .center
         number.bezelStyle = .roundedBezel
         number.setAccessibilityLabel("Phone number")
-        stack.addArrangedSubview(number)
-        number.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        number.toolTip = "Type or paste a number, then press Return to call"
         number.heightAnchor.constraint(equalToConstant: 46).isActive = true
-        callStatus.font = .systemFont(ofSize: 17, weight: .medium)
-        recents.target = self
-        recents.action = #selector(selectRecent(_:))
-        recents.setAccessibilityLabel("Recent calls; choose a number then press Enter to call")
-        stack.addArrangedSubview(recents)
-        recents.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        clearRecents.target = self; clearRecents.action = #selector(clearHistory(_:))
-        seenButton.target = self; seenButton.action = #selector(markHistorySeen(_:))
-        let historyActions = NSStackView(views: [clearRecents, seenButton])
-        historyActions.spacing = 12
-        stack.addArrangedSubview(historyActions)
-        rebuildRecents()
-        stack.addArrangedSubview(callStatus)
+        callStatus.font = .systemFont(ofSize: 16, weight: .semibold)
+        callStatus.alignment = .center
         remote.font = .systemFont(ofSize: 12)
+        remote.textColor = .secondaryLabelColor
         remote.lineBreakMode = .byTruncatingMiddle
         remote.alignment = .center
-        stack.addArrangedSubview(remote)
-        remote.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        let actions = NSStackView(views: [callButton, hangupButton])
-        actions.spacing = 12
+        let callDetails = verticalStack([callStatus, remote], spacing: 4)
+        for label in [callStatus, remote] { label.widthAnchor.constraint(equalTo: callDetails.widthAnchor).isActive = true }
         callButton.target = self
         callButton.action = #selector(callOrAnswer(_:))
-        callButton.bezelStyle = .rounded
+        symbol("phone.fill", on: callButton, help: "Call or answer (Return)")
         callButton.contentTintColor = .systemGreen
         hangupButton.target = self
         hangupButton.action = #selector(hangup(_:))
-        hangupButton.bezelStyle = .rounded
+        symbol("phone.down.fill", on: hangupButton, help: "End or reject the call (Escape)")
         hangupButton.contentTintColor = .systemRed
-        for button in [callButton, hangupButton] { button.widthAnchor.constraint(equalToConstant: 145).isActive = true }
-        stack.addArrangedSubview(actions)
-        let keypad = NSStackView()
-        keypad.orientation = .vertical
-        keypad.spacing = 5
+        let actions = NSStackView(views: [callButton, hangupButton])
+        actions.distribution = .fillEqually
+        actions.spacing = 10
+        for button in [callButton, hangupButton] { button.heightAnchor.constraint(equalToConstant: 32).isActive = true }
+        let dialling = verticalStack([number, callDetails, actions], spacing: 12)
+        for view in [number, callDetails, actions] { view.widthAnchor.constraint(equalTo: dialling.widthAnchor).isActive = true }
+        stack.addArrangedSubview(dialling)
+        dialling.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+
+        let keypad = verticalStack([], spacing: 6)
         for row in ["123", "456", "789", "*0#"] {
             let buttons = row.map { character -> NSButton in
                 let button = NSButton(title: String(character), target: self, action: #selector(keypadPressed(_:)))
                 button.bezelStyle = .rounded
-                button.font = .monospacedDigitSystemFont(ofSize: 20, weight: .medium)
-                button.widthAnchor.constraint(equalToConstant: 92).isActive = true
-                button.heightAnchor.constraint(equalToConstant: 36).isActive = true
+                button.font = .monospacedDigitSystemFont(ofSize: 20, weight: .regular)
+                button.heightAnchor.constraint(equalToConstant: 38).isActive = true
+                button.toolTip = "Dial \(character); sends a keypad tone during a call"
                 return button
             }
             let rowStack = NSStackView(views: buttons)
-            rowStack.spacing = 7
+            rowStack.distribution = .fillEqually
+            rowStack.spacing = 8
             keypad.addArrangedSubview(rowStack)
+            rowStack.widthAnchor.constraint(equalTo: keypad.widthAnchor).isActive = true
         }
         stack.addArrangedSubview(keypad)
+        keypad.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         muteButton.target = self
         muteButton.action = #selector(toggleMute(_:))
-        stack.addArrangedSubview(muteButton)
-        let hint = NSTextField(labelWithString: "Enter: call / answer   ·   Esc: hang up\nDuring a call, type 0–9, * or # for menus.")
+        muteButton.toolTip = "Mute your microphone during a connected call"
+        let hint = NSTextField(labelWithString: "Return to call or answer · Esc to end\nType 0–9, * or # for telephone menus.")
         hint.font = .systemFont(ofSize: 11)
         hint.textColor = .secondaryLabelColor
         hint.alignment = .center
-        stack.addArrangedSubview(hint)
+        let callFooter = verticalStack([muteButton, hint], spacing: 10)
+        callFooter.alignment = .centerX
+        stack.addArrangedSubview(callFooter)
+        callFooter.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+
+        recents.target = self
+        recents.action = #selector(selectRecent(_:))
+        recents.setAccessibilityLabel("Recent calls; choose a number then press Return to call")
+        clearRecents.title = ""
+        clearRecents.target = self
+        clearRecents.action = #selector(clearHistory(_:))
+        symbol("trash", on: clearRecents, help: "Clear this account’s recent calls")
+        clearRecents.setAccessibilityLabel("Clear recents")
+        seenButton.target = self
+        seenButton.action = #selector(markHistorySeen(_:))
+        seenButton.bezelStyle = .rounded
+        seenButton.toolTip = "Mark missed calls as seen"
+        let historyActions = NSStackView(views: [seenButton, NSView(), clearRecents])
+        let recentSection = section("Recent calls", views: [recents, historyActions])
+        stack.addArrangedSubview(recentSection)
+        recentSection.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        rebuildRecents()
         errorLabel.font = .systemFont(ofSize: 11)
         errorLabel.textColor = .systemRed
         errorLabel.alignment = .center
+        errorLabel.setAccessibilityLabel("Call error")
         stack.addArrangedSubview(errorLabel)
         errorLabel.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        errorLabel.heightAnchor.constraint(equalToConstant: 30).isActive = true
-        settingsButton.target = self
-        settingsButton.action = #selector(showSettings(_:))
-        settingsButton.bezelStyle = .rounded
-        reconnectButton.target = self
-        reconnectButton.action = #selector(reconnect(_:))
-        let connectionActions = NSStackView(views: [settingsButton, reconnectButton])
-        connectionActions.spacing = 12
-        stack.addArrangedSubview(connectionActions)
+        errorLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: 30).isActive = true
+        window.initialFirstResponder = number
         refreshUI()
     }
 
@@ -449,6 +505,7 @@ final class Dialler: NSObject, NSApplicationDelegate {
         recents.isEnabled = state.call == 0
         clearRecents.isEnabled = state.call == 0 && !history.entries.isEmpty
         seenButton.isEnabled = history.missedCount > 0
+        seenButton.isHidden = history.missedCount == 0
         statusItem?.button?.title = history.missedCount == 0 ? "" : " \(history.missedCount)"
         statusItem?.length = history.missedCount == 0 ? NSStatusItem.squareLength : NSStatusItem.variableLength
         if state.call == 1 && (lastCall != 1 || lastGeneration != state.call_generation) {
@@ -489,67 +546,79 @@ final class Dialler: NSObject, NSApplicationDelegate {
         passwordField.stringValue = ""
         passwordField.placeholderString = "Enter SIP password (blank keeps saved password)"
         passwordField.setAccessibilityLabel("SIP password")
-        let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 620),
+        let sheet = buildSettingsWindow()
+        _ = sd_start()
+        reloadAudioDevices()
+        settingsWindow = sheet
+        window.beginSheet(sheet)
+        sheet.makeFirstResponder(settings.username.isEmpty ? userField : passwordField)
+    }
+
+    // Separate construction from presentation so offline previews never start the engine.
+    func buildSettingsWindow() -> NSWindow {
+        let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 490),
                              styleMask: [.titled], backing: .buffered, defer: false)
-        sheet.title = "SIP account"
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 8
+        sheet.title = "Settings"
+        let stack = verticalStack([], spacing: 18)
         stack.translatesAutoresizingMaskIntoConstraints = false
         sheet.contentView!.addSubview(stack)
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: sheet.contentView!.leadingAnchor, constant: 20),
             stack.trailingAnchor.constraint(equalTo: sheet.contentView!.trailingAnchor, constant: -20),
-            stack.topAnchor.constraint(equalTo: sheet.contentView!.topAnchor, constant: 16),
-            stack.bottomAnchor.constraint(lessThanOrEqualTo: sheet.contentView!.bottomAnchor, constant: -16)
+            stack.topAnchor.constraint(equalTo: sheet.contentView!.topAnchor, constant: 20),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: sheet.contentView!.bottomAnchor, constant: -20)
         ])
-        for (title, field) in [("SIP server (UDP)", serverField), ("SIP username", userField), ("SIP password", passwordField)] {
+        func row(_ title: String, control: NSControl) -> NSStackView {
             let label = NSTextField(labelWithString: title)
-            label.font = .systemFont(ofSize: 12)
-            stack.addArrangedSubview(label)
-            stack.addArrangedSubview(field)
-            field.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-            field.setAccessibilityLabel(title)
+            label.font = .systemFont(ofSize: 13)
+            label.alignment = .right
+            label.widthAnchor.constraint(equalToConstant: 88).isActive = true
+            control.setAccessibilityLabel(title)
+            let row = NSStackView(views: [label, control])
+            row.alignment = .firstBaseline
+            row.spacing = 10
+            control.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            return row
         }
-        let note = NSTextField(wrappingLabelWithString: "Server and username can be imported from Zoiper. Enter your SIP password once; it is saved in macOS Keychain.")
+        serverField.placeholderString = "sip.example.com"
+        userField.placeholderString = "Your SIP username"
+        passwordField.placeholderString = "Leave blank to keep saved password"
+        let note = NSTextField(wrappingLabelWithString: "Use your provider’s SIP account details. Your password is saved in macOS Keychain. SIP uses UDP; call audio is unencrypted.")
         note.font = .systemFont(ofSize: 11)
         note.textColor = .secondaryLabelColor
-        stack.addArrangedSubview(note)
-        note.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        for (label, popup) in [("Microphone", inputDevices), ("Call output", outputDevices)] {
-            stack.addArrangedSubview(NSTextField(labelWithString: label))
-            popup.target = self; popup.action = #selector(selectAudio(_:))
-            popup.setAccessibilityLabel(label)
-            stack.addArrangedSubview(popup)
-            popup.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        let account = section("Account", views: [row("Server (UDP)", control: serverField), row("Username", control: userField), row("Password", control: passwordField), note])
+        for popup in [inputDevices, outputDevices] {
+            popup.target = self
+            popup.action = #selector(selectAudio(_:))
         }
-        audioCheck.target = self; audioCheck.action = #selector(checkMicrophone(_:))
-        stack.addArrangedSubview(audioCheck)
-        audioLevel.minValue = 0; audioLevel.maxValue = 255
+        audioCheck.target = self
+        audioCheck.action = #selector(checkMicrophone(_:))
+        audioLevel.minValue = 0
+        audioLevel.maxValue = 255
         audioLevel.levelIndicatorStyle = .continuousCapacity
         audioLevel.setAccessibilityLabel("Microphone input level")
-        stack.addArrangedSubview(audioLevel)
-        audioLevel.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        audioLevel.heightAnchor.constraint(equalToConstant: 12).isActive = true
         audioNote.font = .systemFont(ofSize: 11)
         audioNote.textColor = .secondaryLabelColor
-        audioNote.stringValue = "Speak to check the level locally. No recording or remote audio is sent. Ringtone uses the macOS sound output. Audio choices apply now and are saved. Missing devices use the system default until they return."
-        stack.addArrangedSubview(audioNote)
-        audioNote.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        _ = sd_start()
-        reloadAudioDevices()
+        audioNote.stringValue = "Speak to check the level. No recording or remote audio is sent. Ringtone uses macOS sound output. Audio choices apply immediately and are saved, even if you cancel. Missing devices use the system default until they return."
+        let audio = section("Audio", views: [row("Microphone", control: inputDevices), row("Call output", control: outputDevices), audioCheck, audioLevel, audioNote])
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelSettings(_:)))
         cancel.keyEquivalent = "\u{1b}"
         cancel.bezelStyle = .rounded
         let save = NSButton(title: "Save & connect", target: self, action: #selector(saveSettings(_:)))
         save.keyEquivalent = "\r"
         save.bezelStyle = .rounded
-        let actions = NSStackView(views: [cancel, save])
-        actions.spacing = 12
-        stack.addArrangedSubview(actions)
-        settingsWindow = sheet
-        window.beginSheet(sheet)
-        sheet.makeFirstResponder(settings.username.isEmpty ? userField : passwordField)
+        let actions = NSStackView(views: [NSView(), cancel, save])
+        actions.spacing = 8
+        for view in [account, audio, actions] {
+            stack.addArrangedSubview(view)
+            view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+        sheet.initialFirstResponder = serverField
+        serverField.nextKeyView = userField
+        userField.nextKeyView = passwordField
+        passwordField.nextKeyView = inputDevices
+        return sheet
     }
 
     @objc func cancelSettings(_ sender: Any?) {
