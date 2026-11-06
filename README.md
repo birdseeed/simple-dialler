@@ -2,13 +2,15 @@
 
 Simple Dialler is a small native macOS app for making and answering SIP telephone calls. It is designed for people who prefer to enter numbers with a keyboard.
 
+I wanted a simple phone app for my desk. The alternatives I tried felt overly complicated for what I needed, so I built my own pared-back version: type a number, make a call and get on with the day.
+
 ## Screenshots
 
 | Dialler | Account setup |
 | --- | --- |
-| <img src="docs/screenshots/dialler.png" width="280" alt="Simple Dialler connected and ready for keyboard dialling"> | <img src="docs/screenshots/account-setup.png" width="320" alt="SIP account settings using example details"> |
+| <img src="docs/screenshots/dialler-light.png" width="280" alt="Simple Dialler connected and ready for keyboard dialling"> | <img src="docs/screenshots/settings-light.png" width="320" alt="SIP account settings using example details"> |
 
-The account setup screenshot uses example details. These screenshots show the earlier layout; the current build also includes recents, a call timer and audio settings.
+The screenshots use offline example details. The native controls follow the macOS light or dark appearance. Account and audio controls are grouped in Settings; recents stay available below the dial pad.
 
 ## Features
 
@@ -65,6 +67,8 @@ On first use, macOS asks for microphone access when you place or answer a call, 
 ## Testing notes
 
 Automated checks cover number/account validation, local-history retention and account isolation, missed/rejected outcomes retained between UI polls, callback parsing, duration formatting and monotonic timing, deferred/rate-limited recovery, offline SIP engine lifecycle, atomic account-transition admission and incoming/outgoing callback races. Audio-port lifetime is tested against the real conference bridge with a null sound clock; physical capture is replaced for this test. The AppKit harness constructs the UI with fixture settings without invoking app launch or account connection. They do not establish that a live SIP service or physical audio device works.
+
+To regenerate the example screenshots, run `SIMPLE_DIALLER_UI_SCREENSHOTS="$PWD/docs/screenshots" ./build.sh`. The offline AppKit harness renders only its own fixture windows in light and dark appearances; it does not launch the dialler, read Keychain credentials, register an account or open a microphone.
 
 After wake or a network-path change the app waits for the network to settle, then requests registration refresh. Recovery waits until the current call ends and coalesces repeated notifications. The provider's registration retry remains enabled. Reconnect performs a full account reconnect; it is disabled during calls. This cannot preserve a call across a network outage.
 
