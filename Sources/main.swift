@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import Security
+import Network
 
 final class Dialler: NSObject, NSApplicationDelegate {
     var window: NSWindow!
@@ -26,6 +27,23 @@ final class Dialler: NSObject, NSApplicationDelegate {
     var lastGeneration: UInt32 = 0
     var awaitingMicrophone = false
     var settings = AccountSettings.load()
+    lazy var history = CallHistory(account: settings.keychainAccount)
+    let recents = NSPopUpButton(frame: .zero, pullsDown: false)
+    let clearRecents = NSButton(title: "Clear recents", target: nil, action: nil)
+    let seenButton = NSButton(title: "Mark seen", target: nil, action: nil)
+    let reconnectButton = NSButton(title: "Reconnect", target: nil, action: nil)
+    let inputDevices = NSPopUpButton(frame: .zero, pullsDown: false)
+    let outputDevices = NSPopUpButton(frame: .zero, pullsDown: false)
+    let audioCheck = NSButton(checkboxWithTitle: "Check microphone locally", target: nil, action: nil)
+    let audioLevel = NSLevelIndicator()
+    let audioNote = NSTextField(wrappingLabelWithString: "")
+    var selectedInput = UserDefaults.standard.string(forKey: "audioInputName")
+    var selectedOutput = UserDefaults.standard.string(forKey: "audioOutputName")
+    var lastDeviceScan: TimeInterval = 0
+    var recovery = RecoveryPolicy()
+    let pathMonitor = NWPathMonitor()
+    var networkOnline = true
+    var lastPath: NWPath?
     var settingsWindow: NSWindow?
     let serverField = NSTextField(string: "")
     let userField = NSTextField(string: "")
@@ -47,11 +65,17 @@ final class Dialler: NSObject, NSApplicationDelegate {
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                guard self != nil, sd_state().call == 0 else { return }
-                _ = sd_refresh()
+            self?.recovery.request(now: ProcessInfo.processInfo.systemUptime)
+        }
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.networkOnline = path.status == .satisfied
+                if self.lastPath != nil { self.recovery.request(now: ProcessInfo.processInfo.systemUptime) }
+                self.lastPath = path
             }
         }
+        pathMonitor.start(queue: DispatchQueue(label: "simple-dialler.network"))
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         window.makeFirstResponder(number)
@@ -133,6 +157,7 @@ final class Dialler: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        pathMonitor.cancel()
         timer?.invalidate()
         stopRinging()
         if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
@@ -163,7 +188,7 @@ final class Dialler: NSObject, NSApplicationDelegate {
     }
 
     func buildWindow() {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 390, height: 640),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 390, height: 720),
                           styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.title = "Simple Dialler"
@@ -180,9 +205,12 @@ final class Dialler: NSObject, NSApplicationDelegate {
             stack.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor, constant: 24),
             stack.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor, constant: -24)
         ])
+        registration.maximumNumberOfLines = 3
+        registration.alignment = .center
         registration.font = .systemFont(ofSize: 12)
         registration.textColor = .secondaryLabelColor
         stack.addArrangedSubview(registration)
+        registration.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         number.placeholderString = "Number or +44…"
         number.font = .monospacedDigitSystemFont(ofSize: 27, weight: .regular)
         number.alignment = .center
@@ -192,6 +220,17 @@ final class Dialler: NSObject, NSApplicationDelegate {
         number.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         number.heightAnchor.constraint(equalToConstant: 46).isActive = true
         callStatus.font = .systemFont(ofSize: 17, weight: .medium)
+        recents.target = self
+        recents.action = #selector(selectRecent(_:))
+        recents.setAccessibilityLabel("Recent calls; choose a number then press Enter to call")
+        stack.addArrangedSubview(recents)
+        recents.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        clearRecents.target = self; clearRecents.action = #selector(clearHistory(_:))
+        seenButton.target = self; seenButton.action = #selector(markHistorySeen(_:))
+        let historyActions = NSStackView(views: [clearRecents, seenButton])
+        historyActions.spacing = 12
+        stack.addArrangedSubview(historyActions)
+        rebuildRecents()
         stack.addArrangedSubview(callStatus)
         remote.font = .systemFont(ofSize: 12)
         remote.lineBreakMode = .byTruncatingMiddle
@@ -244,7 +283,11 @@ final class Dialler: NSObject, NSApplicationDelegate {
         settingsButton.target = self
         settingsButton.action = #selector(showSettings(_:))
         settingsButton.bezelStyle = .rounded
-        stack.addArrangedSubview(settingsButton)
+        reconnectButton.target = self
+        reconnectButton.action = #selector(reconnect(_:))
+        let connectionActions = NSStackView(views: [settingsButton, reconnectButton])
+        connectionActions.spacing = 12
+        stack.addArrangedSubview(connectionActions)
         refreshUI()
     }
 
@@ -289,10 +332,15 @@ final class Dialler: NSObject, NSApplicationDelegate {
             }
             let now = sd_state()
             guard now.call == state.call, now.call_generation == state.call_generation else { return }
+            self.stopAudioCheck()
             let result: Int32
             if let destination {
                 self.number.stringValue = destination
                 result = destination.withCString { sd_call($0) }
+                if result == 0 {
+                    self.history.record(destination, outcome: "outgoing")
+                    self.rebuildRecents()
+                }
             } else { result = sd_answer() }
             self.check(result, action: destination == nil ? "Answer" : "Call")
             self.refreshUI()
@@ -343,15 +391,32 @@ final class Dialler: NSObject, NSApplicationDelegate {
     }
 
     func check(_ status: Int32, action: String) {
-        errorLabel.stringValue = status == 0 ? "" : "\(action) failed (\(status))."
+        errorLabel.stringValue = status == 0 ? "" : "\(action): \(CallPresentation.failure(status)) (Code \(status))"
     }
 
     func refreshUI() {
         var state = sd_state()
+        let now = ProcessInfo.processInfo.systemUptime
+        if recovery.shouldRefresh(now: now, online: networkOnline, idle: state.call == 0 && !awaitingMicrophone && state.running != 0) {
+            check(sd_refresh(), action: "Reconnect")
+        }
+        var incoming = SDIncomingResult()
+        var historyChanged = false
+        while sd_next_incoming(&incoming) != 0 {
+            let value = withUnsafePointer(to: &incoming.remote) { pointer in
+                pointer.withMemoryRebound(to: CChar.self, capacity: 256) { String(cString: $0) }
+            }
+            history.record(value, outcome: incoming.outcome == 1 ? "missed" : (incoming.outcome == 2 ? "rejected" : "answered"))
+            historyChanged = true
+        }
+        if historyChanged { rebuildRecents() }
+        if state.call != 0 { stopAudioCheck() }
+        if now - lastDeviceScan >= 3 && state.call == 0 && audioCheck.state == .off && state.running != 0 { reloadAudioDevices() }
+        if audioCheck.state == .on { audioLevel.doubleValue = Double(sd_audio_level()) }
         switch state.registration {
         case 1: registration.stringValue = "Connecting…"
         case 2: registration.stringValue = "Connected"
-        case 3: registration.stringValue = "Registration failed (\(state.registration_code))"
+        case 3: registration.stringValue = "\(CallPresentation.failure(state.registration_code)) (SIP \(state.registration_code))"
         default: registration.stringValue = "Not connected · open Settings"
         }
         menuStatus.title = registration.stringValue
@@ -360,9 +425,14 @@ final class Dialler: NSObject, NSApplicationDelegate {
         switch state.call {
         case 1: callStatus.stringValue = "Incoming call"
         case 2: callStatus.stringValue = state.call_code == 180 ? "Ringing…" : "Connecting call…"
-        case 3: callStatus.stringValue = state.muted != 0 ? "In call · microphone muted" : "In call"
+        case 3: callStatus.stringValue = "\(CallPresentation.duration(state.connected_seconds)) · \(state.muted != 0 ? "Muted" : "In call")"
         default:
-            if lastCall != 0 { callStatus.stringValue = state.call_code >= 300 ? "Call ended (\(state.call_code))" : "Call ended" }
+            if lastCall != 0 {
+                callStatus.stringValue = "Call ended"
+                if state.call_code >= 300 && state.call_code != 487 {
+                    errorLabel.stringValue = "\(CallPresentation.failure(state.call_code)) (SIP \(state.call_code))"
+                }
+            }
         }
         remote.stringValue = state.call == 0 ? " " : withUnsafePointer(to: &state.remote) { pointer in
             pointer.withMemoryRebound(to: CChar.self, capacity: 256) { String(cString: $0) }
@@ -374,7 +444,13 @@ final class Dialler: NSObject, NSApplicationDelegate {
         hangupButton.isEnabled = state.call != 0
         muteButton.isEnabled = state.call == 3
         muteButton.state = state.muted != 0 ? .on : .off
-        settingsButton.isEnabled = state.call == 0
+        settingsButton.isEnabled = state.call == 0 && !awaitingMicrophone
+        reconnectButton.isEnabled = state.call == 0 && !awaitingMicrophone
+        recents.isEnabled = state.call == 0
+        clearRecents.isEnabled = state.call == 0 && !history.entries.isEmpty
+        seenButton.isEnabled = history.missedCount > 0
+        statusItem?.button?.title = history.missedCount == 0 ? "" : " \(history.missedCount)"
+        statusItem?.length = history.missedCount == 0 ? NSStatusItem.squareLength : NSStatusItem.variableLength
         if state.call == 1 && (lastCall != 1 || lastGeneration != state.call_generation) {
             startRinging()
             window.orderFrontRegardless()
@@ -413,7 +489,7 @@ final class Dialler: NSObject, NSApplicationDelegate {
         passwordField.stringValue = ""
         passwordField.placeholderString = "Enter SIP password (blank keeps saved password)"
         passwordField.setAccessibilityLabel("SIP password")
-        let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 310),
+        let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 620),
                              styleMask: [.titled], backing: .buffered, defer: false)
         sheet.title = "SIP account"
         let stack = NSStackView()
@@ -425,7 +501,8 @@ final class Dialler: NSObject, NSApplicationDelegate {
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: sheet.contentView!.leadingAnchor, constant: 20),
             stack.trailingAnchor.constraint(equalTo: sheet.contentView!.trailingAnchor, constant: -20),
-            stack.topAnchor.constraint(equalTo: sheet.contentView!.topAnchor, constant: 16)
+            stack.topAnchor.constraint(equalTo: sheet.contentView!.topAnchor, constant: 16),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: sheet.contentView!.bottomAnchor, constant: -16)
         ])
         for (title, field) in [("SIP server (UDP)", serverField), ("SIP username", userField), ("SIP password", passwordField)] {
             let label = NSTextField(labelWithString: title)
@@ -440,6 +517,27 @@ final class Dialler: NSObject, NSApplicationDelegate {
         note.textColor = .secondaryLabelColor
         stack.addArrangedSubview(note)
         note.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        for (label, popup) in [("Microphone", inputDevices), ("Call output", outputDevices)] {
+            stack.addArrangedSubview(NSTextField(labelWithString: label))
+            popup.target = self; popup.action = #selector(selectAudio(_:))
+            popup.setAccessibilityLabel(label)
+            stack.addArrangedSubview(popup)
+            popup.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+        audioCheck.target = self; audioCheck.action = #selector(checkMicrophone(_:))
+        stack.addArrangedSubview(audioCheck)
+        audioLevel.minValue = 0; audioLevel.maxValue = 255
+        audioLevel.levelIndicatorStyle = .continuousCapacity
+        audioLevel.setAccessibilityLabel("Microphone input level")
+        stack.addArrangedSubview(audioLevel)
+        audioLevel.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        audioNote.font = .systemFont(ofSize: 11)
+        audioNote.textColor = .secondaryLabelColor
+        audioNote.stringValue = "Speak to check the level locally. No recording or remote audio is sent. Ringtone uses the macOS sound output. Audio choices apply now and are saved. Missing devices use the system default until they return."
+        stack.addArrangedSubview(audioNote)
+        audioNote.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        _ = sd_start()
+        reloadAudioDevices()
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelSettings(_:)))
         cancel.keyEquivalent = "\u{1b}"
         cancel.bezelStyle = .rounded
@@ -456,6 +554,7 @@ final class Dialler: NSObject, NSApplicationDelegate {
 
     @objc func cancelSettings(_ sender: Any?) {
         guard let sheet = settingsWindow else { return }
+        stopAudioCheck()
         passwordField.stringValue = ""
         window.endSheet(sheet)
         settingsWindow = nil
@@ -485,10 +584,8 @@ final class Dialler: NSObject, NSApplicationDelegate {
         guard result == errSecSuccess else {
             showSettingsError("Could not save the password to Keychain (\(result)).", sheet: sheet); return
         }
-        settings = proposed
-        settings.save()
         cancelSettings(nil)
-        connect(password)
+        if connect(password, account: proposed) { settings.save() }
     }
 
     func showSettingsError(_ message: String, sheet: NSWindow) {
@@ -497,20 +594,131 @@ final class Dialler: NSObject, NSApplicationDelegate {
         alert.beginSheetModal(for: sheet)
     }
 
-    func connect(_ password: String) {
-        let result = settings.server.withCString { server in
-            settings.username.withCString { username in
+    func rebuildRecents() {
+        recents.removeAllItems()
+        recents.addItem(withTitle: history.missedCount > 0 ? "Recents · \(history.missedCount) missed" : "Recent calls")
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short; formatter.timeStyle = .short
+        for (index, entry) in history.entries.enumerated() {
+            recents.addItem(withTitle: "\(entry.outcome.capitalized) · \(entry.number) · \(formatter.string(from: entry.date))")
+            recents.lastItem?.tag = index
+        }
+        recents.selectItem(at: 0)
+    }
+
+    @objc func selectRecent(_ sender: Any?) {
+        let index = recents.indexOfSelectedItem - 1
+        guard sd_state().call == 0, history.entries.indices.contains(index) else { return }
+        if let callback = CallPresentation.callbackNumber(history.entries[index].number) {
+            number.stringValue = callback
+            errorLabel.stringValue = ""
+            window.makeFirstResponder(number)
+            number.selectText(nil)
+        } else { errorLabel.stringValue = "This caller did not supply a diallable telephone number." }
+    }
+
+    @objc func clearHistory(_ sender: Any?) { history.clear(); rebuildRecents() }
+    @objc func markHistorySeen(_ sender: Any?) { history.markSeen(); rebuildRecents() }
+
+    @objc func reconnect(_ sender: Any?) {
+        guard sd_state().call == 0, !awaitingMicrophone else { return }
+        stopAudioCheck()
+        let (password, status) = PasswordStore.read(settings.keychainAccount)
+        guard let password else {
+            errorLabel.stringValue = "Could not read the saved password (Keychain \(status)). Open Settings."
+            return
+        }
+        connect(password)
+    }
+
+    func reloadAudioDevices() {
+        lastDeviceScan = ProcessInfo.processInfo.systemUptime
+        var devices = [SDAudioDevice](repeating: SDAudioDevice(), count: 64)
+        let count = sd_audio_devices(&devices, Int32(devices.count))
+        inputDevices.removeAllItems(); outputDevices.removeAllItems()
+        inputDevices.addItem(withTitle: "System default"); inputDevices.lastItem?.tag = -1
+        outputDevices.addItem(withTitle: "System default"); outputDevices.lastItem?.tag = -2
+        for var device in devices.prefix(Int(count)) {
+            let name = withUnsafePointer(to: &device.name) { p in
+                p.withMemoryRebound(to: CChar.self, capacity: 128) { String(cString: $0) }
+            }
+            if device.inputs > 0 { inputDevices.addItem(withTitle: name); inputDevices.lastItem?.tag = Int(device.id) }
+            if device.outputs > 0 { outputDevices.addItem(withTitle: name); outputDevices.lastItem?.tag = Int(device.id) }
+        }
+        if let name = selectedInput, inputDevices.itemTitles.contains(name) { inputDevices.selectItem(withTitle: name) }
+
+        if let name = selectedOutput, outputDevices.itemTitles.contains(name) { outputDevices.selectItem(withTitle: name) }
+
+        // Device IDs may change on hotplug. Missing choices fall back to defaults.
+        _ = sd_audio_select(Int32(inputDevices.selectedTag()), Int32(outputDevices.selectedTag()))
+    }
+
+    @objc func selectAudio(_ sender: Any?) {
+        stopAudioCheck()
+        selectedInput = inputDevices.indexOfSelectedItem == 0 ? nil : inputDevices.titleOfSelectedItem
+        selectedOutput = outputDevices.indexOfSelectedItem == 0 ? nil : outputDevices.titleOfSelectedItem
+        UserDefaults.standard.set(selectedInput, forKey: "audioInputName")
+        UserDefaults.standard.set(selectedOutput, forKey: "audioOutputName")
+        check(sd_audio_select(Int32(inputDevices.selectedTag()), Int32(outputDevices.selectedTag())), action: "Audio selection")
+    }
+
+    @objc func checkMicrophone(_ sender: Any?) {
+        guard audioCheck.state == .on else { stopAudioCheck(); return }
+        withMicrophone { [weak self] allowed in
+            guard let self else { return }
+            guard allowed, self.settingsWindow != nil, sd_state().call == 0, self.audioCheck.state == .on else {
+                self.stopAudioCheck(); return
+            }
+            let result = sd_audio_check(1)
+            if result != 0 { self.stopAudioCheck(); self.audioNote.stringValue = "Could not open audio devices (Code \(result)). Choose another device." }
+        }
+    }
+
+    func stopAudioCheck(stopCapture: () -> Void = { _ = sd_audio_check(0) }) {
+        // The checkbox is already off when its action arrives. Cleanup must
+        // always reach the bridge, which owns the actual capture lifetime.
+        stopCapture()
+        audioCheck.state = .off
+        audioLevel.doubleValue = 0
+    }
+
+    @discardableResult
+    func connect(_ password: String, account proposed: AccountSettings? = nil) -> Bool {
+        let target = proposed ?? settings
+        let admission = sd_prepare_connect()
+        guard admission == 0 else {
+            check(admission, action: "Connection")
+            return false
+        }
+        // Worker callbacks can no longer admit an old-account call. Drain its
+        // preserved completion queue before publishing the replacement account.
+        refreshUI()
+        let result = target.server.withCString { server in
+            target.username.withCString { username in
                 password.withCString { sd_connect(server, username, $0) }
             }
         }
+        settings = target
+        history = CallHistory(account: settings.keychainAccount)
+        rebuildRecents()
+        reloadAudioDevices()
         check(result, action: "Connection")
         refreshUI()
         window.makeFirstResponder(number)
+        return true
     }
+
 }
 
-let application = NSApplication.shared
-let delegate = Dialler()
-application.setActivationPolicy(.regular)
-application.delegate = delegate
-application.run()
+#if !DIALLER_UI_TEST
+@main
+struct DiallerApplication {
+    static func main() {
+        let application = NSApplication.shared
+        let delegate = Dialler()
+        application.setActivationPolicy(.regular)
+        application.delegate = delegate
+        application.run()
+    }
+}
+#endif

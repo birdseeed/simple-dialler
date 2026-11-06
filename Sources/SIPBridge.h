@@ -11,10 +11,28 @@ typedef struct {
     int call_code;
     int muted;
     unsigned int call_generation;
+    unsigned long long connected_seconds;
     char remote[256];
 } SDState;
 
+typedef struct {
+    int outcome; // 1 missed, 2 rejected, 3 answered
+    char remote[256];
+} SDIncomingResult;
+// Bounded queue retains completed incoming events between UI polls.
+int sd_next_incoming(SDIncomingResult *result);
+typedef struct {
+    int id;
+    int inputs;
+    int outputs;
+    char name[128];
+} SDAudioDevice;
+int sd_audio_devices(SDAudioDevice *devices, int capacity);
+int sd_audio_select(int input, int output);
+int sd_audio_check(int enabled);
+int sd_audio_level(void);
 int sd_start(void);
+int sd_prepare_connect(void);
 int sd_connect(const char *server, const char *username, const char *password);
 void sd_stop(void);
 SDState sd_state(void);

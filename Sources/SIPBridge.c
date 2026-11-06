@@ -3,6 +3,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static SDState state;
@@ -10,6 +11,41 @@ static int created, stopping;
 static pjsua_acc_id account = PJSUA_INVALID_ID;
 static pjsua_call_id current = PJSUA_INVALID_ID;
 static char domain[260];
+static int incoming_outcome;
+static struct timespec connected_at;
+static SDIncomingResult incoming_results[32];
+static unsigned incoming_head, incoming_count;
+static int audio_input = PJMEDIA_AUD_DEFAULT_CAPTURE_DEV;
+static int audio_output = PJMEDIA_AUD_DEFAULT_PLAYBACK_DEV;
+static int checking_audio;
+static pj_pool_t *check_pool;
+static pjmedia_port *check_port;
+static pjsua_conf_port_id check_slot = PJSUA_INVALID_ID;
+
+static unsigned long long elapsed_seconds(struct timespec start, struct timespec end) {
+    if (!start.tv_sec || end.tv_sec < start.tv_sec) return 0;
+    time_t seconds = end.tv_sec - start.tv_sec;
+    if (end.tv_nsec < start.tv_nsec && seconds > 0) seconds--;
+    return (unsigned long long)seconds;
+}
+
+static void completed_incoming(void) {
+    if (!incoming_outcome) return;
+    if (incoming_count == 32) { incoming_head = (incoming_head + 1) % 32; incoming_count--; }
+    SDIncomingResult *result = &incoming_results[(incoming_head + incoming_count++) % 32];
+    result->outcome = incoming_outcome;
+    memcpy(result->remote, state.remote, sizeof(result->remote));
+    incoming_outcome = 0;
+}
+
+int sd_next_incoming(SDIncomingResult *result) {
+    if (!result) return 0;
+    pthread_mutex_lock(&lock);
+    int available = incoming_count != 0;
+    if (available) { *result = incoming_results[incoming_head]; incoming_head = (incoming_head + 1) % 32; incoming_count--; }
+    pthread_mutex_unlock(&lock);
+    return available;
+}
 
 static void no_log(int level, const char *data, int length) {
     (void)level; (void)data; (void)length;
@@ -49,10 +85,12 @@ static void call_changed(pjsua_call_id id, pjsip_event *event) {
         copy_remote(&info.remote_info);
         state.call_code = info.last_status;
         if (info.state == PJSIP_INV_STATE_DISCONNECTED) {
+            completed_incoming();
             current = PJSUA_INVALID_ID;
             state.call = 0;
             state.muted = 0;
         } else if (info.state == PJSIP_INV_STATE_CONFIRMED) {
+            if (state.call != 3) clock_gettime(CLOCK_MONOTONIC, &connected_at);
             state.call = 3;
         }
     }
@@ -67,6 +105,8 @@ static void incoming(pjsua_acc_id id, pjsua_call_id call, pjsip_rx_data *data) {
     int accept = !stopping && id == account && current == PJSUA_INVALID_ID;
     if (accept) {
         current = call;
+        incoming_outcome = 1;
+        memset(&connected_at, 0, sizeof(connected_at));
         state.call = 1;
         state.call_code = 180;
         state.muted = 0;
@@ -119,6 +159,11 @@ static pjsip_redirect_op redirected(pjsua_call_id id, const pjsip_uri *target,
 SDState sd_state(void) {
     pthread_mutex_lock(&lock);
     SDState result = state;
+    if (state.call == 3) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        result.connected_seconds = elapsed_seconds(connected_at, now);
+    } else result.connected_seconds = 0;
     pthread_mutex_unlock(&lock);
     return result;
 }
@@ -176,6 +221,7 @@ void sd_stop(void) {
     pthread_mutex_lock(&lock);
     stopping = 1;
     pthread_mutex_unlock(&lock);
+    sd_audio_check(0);
     // Joins PJ worker threads before resetting their shared state.
     pjsua_destroy();
     created = 0;
@@ -184,6 +230,11 @@ void sd_stop(void) {
     current = PJSUA_INVALID_ID;
     memset(&state, 0, sizeof(state));
     memset(domain, 0, sizeof(domain));
+    incoming_outcome = 0;
+    memset(&connected_at, 0, sizeof(connected_at));
+    checking_audio = 0;
+    audio_input = PJMEDIA_AUD_DEFAULT_CAPTURE_DEV;
+    audio_output = PJMEDIA_AUD_DEFAULT_PLAYBACK_DEV;
     pthread_mutex_unlock(&lock);
 }
 
@@ -191,11 +242,20 @@ static int safe_token(const char *value, const char *allowed, size_t max) {
     return value && value[0] && strlen(value) <= max && strspn(value, allowed) == strlen(value);
 }
 
+int sd_prepare_connect(void) {
+    pthread_mutex_lock(&lock);
+    int result = current == PJSUA_INVALID_ID ? PJ_SUCCESS : PJ_EBUSY;
+    if (result == PJ_SUCCESS) stopping = 1; // Freeze incoming admission before draining old-account events.
+    pthread_mutex_unlock(&lock);
+    return result;
+}
+
 int sd_connect(const char *server, const char *username, const char *password) {
     if (!safe_token(server, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-:", 253) ||
         !safe_token(username, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.+-*", 128) ||
         !password || !password[0] || strlen(password) > 512) return PJ_EINVAL;
-    if (sd_state().call) return PJ_EBUSY;
+    int admission = sd_prepare_connect();
+    if (admission != PJ_SUCCESS) return admission;
     sd_stop();
     pj_status_t result = sd_start();
     if (result != PJ_SUCCESS) return result;
@@ -251,6 +311,7 @@ int sd_call(const char *number) {
     state.call_code = 0;
     state.muted = 0;
     state.call_generation++;
+    memset(&connected_at, 0, sizeof(connected_at));
     pthread_mutex_unlock(&lock);
     pjsua_conf_adjust_rx_level(0, 1.0f);
     // '#' must be URI escaped; accepting arbitrary SIP URIs is deliberately unsupported.
@@ -280,7 +341,7 @@ int sd_answer(void) {
     pthread_mutex_lock(&lock);
     int call = current;
     int valid = state.call == 1 && call >= 0;
-    if (valid) state.call = 2;
+    if (valid) { state.call = 2; incoming_outcome = 3; }
     pthread_mutex_unlock(&lock);
     if (!valid) return PJ_EINVALIDOP;
     pjsua_conf_adjust_rx_level(0, 1.0f);
@@ -291,7 +352,7 @@ int sd_answer(void) {
     int result = pjsua_call_answer2(call, &settings, 200, NULL, NULL);
     if (result != PJ_SUCCESS) {
         pthread_mutex_lock(&lock);
-        if (current == call && state.call == 2) state.call = 1;
+        if (current == call && state.call == 2) { state.call = 1; incoming_outcome = 1; }
         pthread_mutex_unlock(&lock);
     }
     return result;
@@ -301,8 +362,15 @@ int sd_hangup(void) {
     pthread_mutex_lock(&lock);
     int call = current;
     int code = state.call == 1 ? 486 : 0;
+    if (code) incoming_outcome = 2;
     pthread_mutex_unlock(&lock);
-    return call >= 0 ? pjsua_call_hangup(call, code, NULL, NULL) : PJ_EINVALIDOP;
+    int result = call >= 0 ? pjsua_call_hangup(call, code, NULL, NULL) : PJ_EINVALIDOP;
+    if (result != PJ_SUCCESS && code) {
+        pthread_mutex_lock(&lock);
+        if (current == call && state.call == 1) incoming_outcome = 1;
+        pthread_mutex_unlock(&lock);
+    }
+    return result;
 }
 
 int sd_dtmf(char digit) {
@@ -327,5 +395,111 @@ int sd_mute(int muted) {
 }
 
 int sd_refresh(void) {
+    if (sd_state().call != 0) return PJ_EBUSY;
     return created && account != PJSUA_INVALID_ID ? pjsua_acc_set_registration(account, PJ_TRUE) : PJ_EINVALIDOP;
+}
+
+
+int sd_audio_devices(SDAudioDevice *devices, int capacity) {
+    if (!created || !devices || capacity <= 0) return 0;
+    // Re-enumeration is only safe while idle, never tear down call audio here.
+    if (sd_state().call == 0 && !checking_audio) pjmedia_aud_dev_refresh();
+    unsigned count = pjmedia_aud_dev_count();
+    int found = 0;
+    for (unsigned i = 0; i < count && found < capacity; i++) {
+        pjmedia_aud_dev_info info;
+        if (pjmedia_aud_dev_get_info(i, &info) != PJ_SUCCESS) continue;
+        SDAudioDevice *device = &devices[found++];
+        device->id = (int)i;
+        device->inputs = (int)info.input_count;
+        device->outputs = (int)info.output_count;
+        snprintf(device->name, sizeof(device->name), "%s", info.name);
+    }
+    return found;
+}
+
+static int configure_audio(int input, int output) {
+    pjmedia_aud_dev_info info;
+    if (input >= 0 && (pjmedia_aud_dev_get_info(input, &info) != PJ_SUCCESS || !info.input_count)) return PJ_EINVAL;
+    if (output >= 0 && (pjmedia_aud_dev_get_info(output, &info) != PJ_SUCCESS || !info.output_count)) return PJ_EINVAL;
+    audio_input = input;
+    audio_output = output;
+    pjsua_snd_dev_param param;
+    pjsua_snd_dev_param_default(&param);
+    param.capture_dev = input;
+    param.playback_dev = output;
+    param.mode = PJSUA_SND_DEV_NO_IMMEDIATE_OPEN;
+    return pjsua_set_snd_dev2(&param);
+}
+
+int sd_audio_select(int input, int output) {
+    if (!created || sd_state().call != 0 || checking_audio) return PJ_EINVALIDOP;
+    return configure_audio(input, output);
+}
+
+static pj_status_t discard_frame(pjmedia_port *port, pjmedia_frame *frame) {
+    (void)port; (void)frame;
+    return PJ_SUCCESS;
+}
+
+static pj_status_t destroy_check_port(pjmedia_port *port) {
+    pj_pool_release((pj_pool_t *)port->port_data.pdata);
+    return PJ_SUCCESS;
+}
+
+static int create_check_port(void) {
+    check_pool = pjsua_pool_create("local-mic-check", 1024, 1024);
+    if (!check_pool) return PJ_ENOMEM;
+    check_port = PJ_POOL_ZALLOC_T(check_pool, pjmedia_port);
+    pj_str_t name = pj_str("local-mic-discard");
+    pjmedia_port_info_init(&check_port->info, &name, PJMEDIA_SIG_CLASS_PORT_AUD('L', 'M'), 16000, 1, 16, 320);
+    check_port->put_frame = discard_frame;
+    check_port->on_destroy = destroy_check_port;
+    check_port->port_data.pdata = check_pool;
+    int result = pjmedia_port_init_grp_lock(check_port, check_pool, NULL);
+    if (result != PJ_SUCCESS) {
+        pj_pool_release(check_pool); check_pool = NULL; check_port = NULL;
+    }
+    return result;
+}
+
+int sd_audio_check(int enabled) {
+    if (!created || (enabled && sd_state().call != 0)) return PJ_EINVALIDOP;
+    if (enabled) {
+        if (checking_audio) return PJ_SUCCESS;
+        int result = create_check_port();
+        if (result != PJ_SUCCESS) return result;
+        if (result == PJ_SUCCESS) result = pjsua_conf_add_port(check_pool, check_port, &check_slot);
+        if (result == PJ_SUCCESS) result = pjsua_set_snd_dev(audio_input, audio_output);
+        // A private null sink keeps input metering active. Never connect the
+        // microphone to playback or to a remote call for this local check.
+        if (result == PJ_SUCCESS) result = pjsua_conf_connect(0, check_slot);
+        checking_audio = 1; // Also permits cleanup of partial setup failures.
+        if (result != PJ_SUCCESS) sd_audio_check(0);
+        return result;
+    }
+    if (checking_audio) {
+        if (check_slot != PJSUA_INVALID_ID) {
+            pjsua_conf_disconnect(0, check_slot);
+            pjsua_conf_remove_port(check_slot);
+        }
+        // Drop our reference; the conference bridge retains its own reference
+        // until asynchronous removal finishes. Only the port destructor frees
+        // its pool, including partial setup and engine teardown paths.
+        if (check_port) pjmedia_port_destroy(check_port);
+        check_pool = NULL;
+        check_port = NULL;
+        check_slot = PJSUA_INVALID_ID;
+        pjsua_set_no_snd_dev();
+        checking_audio = 0;
+        return configure_audio(audio_input, audio_output);
+    }
+    return PJ_SUCCESS;
+}
+
+int sd_audio_level(void) {
+    unsigned tx = 0, rx = 0;
+    if (!checking_audio || sd_state().call != 0) return 0;
+    if (pjsua_conf_get_signal_level(0, &tx, &rx) != PJ_SUCCESS) return 0;
+    return (int)rx;
 }

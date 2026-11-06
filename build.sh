@@ -21,12 +21,17 @@ done
 BUILD_DIR="${SIMPLE_DIALLER_BUILD_DIR:-$HOME/Library/Developer/SimpleDialler/build}"
 mkdir -p "$BUILD_DIR"
 clang -std=c11 -O2 -Wall -Wextra -Werror "${CFLAGS[@]}" -ISources -c Sources/SIPBridge.c -o "$BUILD_DIR/SIPBridge.o"
-swiftc -swift-version 5 Sources/DialRules.swift Tests/main.swift -o "$BUILD_DIR/dial-tests"
+swiftc -swift-version 5 Sources/DialRules.swift Sources/CallHistory.swift Tests/main.swift -o "$BUILD_DIR/dial-tests"
 "$BUILD_DIR/dial-tests"
 clang -std=c11 -O2 -Wall -Wextra -Werror -ISources Tests/bridge.c "$BUILD_DIR/SIPBridge.o" "${LINK_FLAGS[@]}" -lc++ -o "$BUILD_DIR/bridge-tests"
 "$BUILD_DIR/bridge-tests"
 clang -std=c11 -O2 -Wall -Wextra -Werror "${CFLAGS[@]}" -ISources Tests/call-race.c "${LINK_FLAGS[@]}" -lc++ -o "$BUILD_DIR/call-race-tests"
 "$BUILD_DIR/call-race-tests"
+
+clang -std=c11 -O2 -Wall -Wextra -Werror "${CFLAGS[@]}" -ISources Tests/audio-lifecycle.c "${LINK_FLAGS[@]}" -lc++ -o "$BUILD_DIR/audio-lifecycle-tests"
+"$BUILD_DIR/audio-lifecycle-tests"
+swiftc -swift-version 5 -parse-as-library -D DIALLER_UI_TEST -import-objc-header Sources/SIPBridge.h Sources/DialRules.swift Sources/CallHistory.swift Sources/AccountStore.swift Sources/main.swift Tests/ui.swift "$BUILD_DIR/SIPBridge.o" "${LINK_FLAGS[@]}" -lc++ -framework Security -o "$BUILD_DIR/ui-tests"
+"$BUILD_DIR/ui-tests"
 
 APP="$BUILD_DIR/Simple Dialler.app"
 if [[ -e "$APP" ]]; then
@@ -34,7 +39,7 @@ if [[ -e "$APP" ]]; then
     rm -rf "$APP"
 fi
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/Licenses"
-swiftc -swift-version 5 -O -import-objc-header Sources/SIPBridge.h Sources/DialRules.swift Sources/AccountStore.swift Sources/main.swift "$BUILD_DIR/SIPBridge.o" "${LINK_FLAGS[@]}" -lc++ -framework Security -o "$APP/Contents/MacOS/Simple Dialler"
+swiftc -swift-version 5 -parse-as-library -O -import-objc-header Sources/SIPBridge.h Sources/DialRules.swift Sources/CallHistory.swift Sources/AccountStore.swift Sources/main.swift "$BUILD_DIR/SIPBridge.o" "${LINK_FLAGS[@]}" -lc++ -framework Security -o "$APP/Contents/MacOS/Simple Dialler"
 cp Info.plist "$APP/Contents/Info.plist"
 "$ROOT_DIR/scripts/build-icon.sh"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
